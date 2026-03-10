@@ -39,6 +39,7 @@ for side=elSide
     if ~exist('el_render','var') || ~isobject(el_render)
         el_render = struct([]);
     end
+%     options.reconmethod = 'LeGUI (Davis 2021)';
     if isfield(options, 'reconmethod') && isequal(options.reconmethod, 'LeGUI (Davis 2021)')
 %         ea_trajectory(pobj); % Option for if you want to visualize the
 %         actual electrodes as opposed to spheres

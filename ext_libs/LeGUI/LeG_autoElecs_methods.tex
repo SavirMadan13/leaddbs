@@ -1,0 +1,147 @@
+% LeG_autoElecs_methods.tex
+% Methods: automatic sEEG contact detection from post-operative CT
+% Compile with pdflatex
+
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{hyperref}
+
+\newcommand{\vp}{\mathbf{p}}
+\newcommand{\vm}{\boldsymbol{\mu}}
+\newcommand{\vv}{\mathbf{v}}
+
+\title{Automatic sEEG Electrode Contact Detection Algorithm}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\section{Pipeline overview}
+\label{sec:overview}
+
+The algorithm has four phases plus post-processing:
+
+\begin{enumerate}
+\item \textbf{Phase 1:} Multi-scale blob detection and adaptive thresholding to get candidate contact locations, then merge duplicates across thresholds.
+\item \textbf{Phase 2:} Sequential RANSAC to group candidates into straight shafts (one per electrode).
+\item \textbf{Phase 3:} For each shaft, estimate inter-contact spacing and fill only clear gaps where one or more contacts were missed; add high-confidence unassigned candidates as singletons.
+\item \textbf{Phase 4:} Deduplicate by minimum inter-contact distance, sort by confidence, and cap at MaxElecs.
+\item \textbf{Post-processing:} Drop contacts outside the brain surface and drop shafts that are too curved (linearity filter).
+\end{enumerate}
+
+\section{Phase 1: Multi-scale blob detection and merge}
+\label{sec:phase1}
+
+\subsection{Intensity statistics}
+We compute the 50th, 75th, 90th, 95th, 99th, and 99.9th percentiles of the CT intensity over all voxels with positive value. The median (\(p_{50}\)) gives a stable baseline for normalising intensity; the higher percentiles characterise the bright tail where metal contacts sit. Later we use \(p_{99.9}\) both to normalise the top of the range and to flag ``definitely metal'' voxels that we keep even when other filters would reject them (e.g.\ at the edge of the brain). If there are no positive voxels the algorithm stops and returns no contacts.
+
+\subsection{Laplacian-of-Gaussian (LoG) via Difference-of-Gaussians}
+Contacts show up as bright, compact blobs---roughly spherical or ellipsoidal regions of high intensity. The Laplacian-of-Gaussian (LoG) is a filter that responds strongly to such blobs at a scale that matches their size: it gives a positive response in bright regions that are locally convex and a negative response in the surrounding dimmer region. That contrast helps separate individual contacts from diffuse streak or background. We do not implement the LoG directly; instead we approximate it with a Difference-of-Gaussians (DoG): the difference between a finely smoothed and a more coarsely smoothed copy of the image. The DoG has a similar shape to the LoG when the coarse scale is about 1.6 times the fine scale, and it is cheaper to compute. We run this at several scales (0.4 to 1.2 mm) and take the maximum response at each voxel so that contacts are detected whether they are small and sharp or slightly larger and smoothed (e.g.\ oblique to the slice or in thick-slice acquisitions).
+
+Smoothing is done with a 3D Gaussian. The scale \(\sigma\) is specified in mm so that the physical size of the contact drives the filter, not the voxel grid. We convert to voxel units per axis as \(\sigma_{\mathrm{vox},k} = \sigma_{\mathrm{mm}} / d_k\) for each axis \(k\). That way, if the scan has different resolution along different directions (e.g.\ thicker slices), the effective blur is still consistent in mm. At each scale we form the DoG (fine minus coarse Gaussian, ratio 1.6) and multiply by \(\sigma_{\mathrm{mm}}^2\); that factor corrects for the way the Laplacian's amplitude scales with \(\sigma\). The final blob image is the pointwise maximum over the four scale responses, then rescaled by its 99.9th percentile so the dynamic range is bounded and comparable across scans.
+
+\subsection{Combined score and volume bounds}
+We want to threshold on something that is high only where the voxel is both bright and blob-like. Intensity alone can be high in streaks or at bone; blob alone can be weak for the brightest contacts because of metal bloom (the LoG flattens when the bright region is large). So at each voxel we define a normalised intensity \(\eta\) (0 at the median, 1 near the 99.9th percentile) and combine it with the blob response:
+\begin{align}
+\eta &= \max\left(0,\; \frac{I - p_{50}}{p_{99.9} - p_{50} + \epsilon}\right), \\
+S &= \eta \cdot \max(B,\, 0.1).
+\end{align}
+The product \(S\) is high only when both are high. The 0.1 floor on \(B\) means we never multiply \(\eta\) by zero: even if the LoG response is weak at a very bright voxel, the score still reflects intensity, so we do not drop the brightest contacts. We do not cap \(\eta\) above 1, so the very hottest voxels can push the score beyond 1 and remain at the top when we threshold.
+
+A single sEEG contact is roughly a cylinder about 0.8 mm in diameter and 1.5 mm long, i.e.\ about 0.75 mm\(^3\). We use this to set allowed sizes for connected components. The smallest plausible contact is a fraction of that volume (0.15\(\times\) gives a very conservative lower bound); the largest is many times that (45\(\times\)) to allow for partial volume and merged or blooming contacts. In voxels:
+\[
+n_{\min} = \max\left(2,\; \left\lfloor \frac{0.75 \times 0.15}{V_{\mathrm{vox}}} \right\rfloor\right), \qquad
+n_{\max} = \max\left(60,\; \left\lceil \frac{0.75 \times 45}{V_{\mathrm{vox}}} \right\rceil\right),
+\]
+where \(V_{\mathrm{vox}}\) is the volume of one voxel in mm\(^3\). Components with only 1--3 voxels are usually noise, but we keep them if their mean intensity is at least \(p_{99.9}\), since a single very bright voxel can be a real contact in a high-resolution scan.
+
+\subsection{Threshold sweep and connected components}
+We do not pick a single threshold on \(S\); different scans and different contacts may cross a fixed threshold at different places. So we take 18 thresholds between 0.05 and 0.9 (evenly spaced). For each threshold we form the binary image where \(S\) exceeds that value and run 26-connected component analysis (26-connectivity allows diagonal neighbours in 3D, so oblique contacts stay in one component instead of splitting). For each component we apply three filters:
+
+\textbf{Volume:} Keep the component if its size in voxels is between \(n_{\min}\) and \(n_{\max}\), or if it has 1--3 voxels and mean intensity \(\geq p_{99.9}\).
+
+\textbf{Shape:} From the component we get the principal axis lengths (longest to shortest). If the ratio of longest to shortest exceeds 8, we reject it as a streak artefact---real contacts are more compact.
+
+\textbf{Spatial:} We convert the component centroid to mm and check whether it lies inside the brain surface (when a mesh is available). We keep it if it is inside or if its mean intensity is \(\geq p_{99.9}\), so we do not drop bright contacts that sit at the boundary.
+
+Each component that passes yields one candidate: the weighted centroid (so the position is intensity-weighted within the component), its mean intensity, and the blob value at that centroid. All candidates from all 18 thresholds are pooled into one list; the same physical contact can appear multiple times at different thresholds, and we merge those in the next step.
+
+\subsection{Merge across thresholds}
+The same physical contact often appears at several thresholds (low thresholds pick it up early, high thresholds keep it until the blob fades). We convert every candidate centroid to mm using the CT affine. Optionally we cap the list to 3000 candidates by score (intensity times blob), while always keeping every candidate with intensity \(\geq p_{99.9}\). Then we cluster: agglomerative clustering with average linkage and a 1.5 mm cutoff, so any two candidates within 1.5 mm can end up in the same cluster (about one contact diameter). Each cluster is replaced by a single merged point. We do not use a simple average of positions; we weight by how confident each detection is (high intensity and high blob give higher weight), so the merged position is pulled toward the stronger detections:
+\[
+\vm = \frac{\sum_i w_i \vp_i}{\sum_i w_i}, \qquad
+w_i = \eta_i \cdot \max(B_i,\, 0.01),
+\]
+where the sum runs over candidates in the cluster, \(\vp_i\) are their positions in mm, and \(\eta_i\), \(B_i\) their normalised intensity and blob value. The confidence \(c\) of the merged point is then a single number we use later for ranking and RANSAC sampling. It combines three things: how many of the 18 thresholds contributed to this cluster (persistence---a contact seen at many thresholds is more reliable), how bright it is relative to other merged points, and how strong the blob response was:
+\[
+c = 0.4\,\frac{\text{number in cluster}}{18} + 0.3\,\frac{\eta - \eta_{\min}}{\eta_{\max} - \eta_{\min} + \epsilon} + 0.3\,B_{\max}.
+\]
+The result is one merged candidate per cluster, in mm, with a confidence value. If Phase 2 is turned off, we sort these by confidence, cap at MaxElecs, convert to voxel coordinates, and return.
+
+\section{Phase 2: RANSAC shaft discovery}
+\label{sec:phase2}
+
+sEEG electrodes are effectively straight: their contacts lie along a line. We use \emph{sequential} RANSAC: find the best line supported by many candidates, assign those candidates to one shaft, remove them from the pool, then find the next best line among what is left, and so on. That way we discover one electrode at a time instead of trying to partition all points in one go.
+
+\subsection{Line model and inlier criterion}
+A line is given by a point \(\vm\) and a unit direction \(\vv\). For any point \(\vp\), we can project it onto the line: the signed distance along the line from \(\vm\) is \(t = (\vp - \vm)^\top \vv\), so \(\vm + t\vv\) is the closest point on the line to \(\vp\). The perpendicular distance from \(\vp\) to the line is then
+\[
+\rho = \bigl\| \vp - \vm - t\vv \bigr\|_2.
+\]
+We say a candidate is an \emph{inlier} for this line if \(\rho \leq 2.5\) mm---i.e.\ it lies inside a tube of radius 2.5 mm around the line. That radius is slightly larger than half a typical contact-to-contact spacing so that small localisation errors do not push real contacts outside the tube.
+
+\subsection{RANSAC loop}
+We start with all merged candidates marked unassigned. We repeat the following until no new shaft is found:
+
+\begin{enumerate}
+\item Take the list of unassigned candidates. If there are fewer than 2, stop.
+\item Run up to 5000 trials (or fewer if the number of unassigned points makes that redundant). In each trial we pick two distinct unassigned points at random, with probability proportional to their confidence (so we tend to sample from strong detections). We fit the line through these two points, compute the perpendicular distance \(\rho\) for every unassigned point, and count how many lie within 2.5 mm of the line (the inliers). We need at least 2 inliers; if there are exactly 2, we also require that the distance between them along the line is at least 6 mm so we do not accept junk lines from two nearby noise points. We score each trial by the sum of the confidences of the inliers and keep the trial with the highest score---so we prefer lines that explain many high-confidence points.
+\item If no trial produced a valid inlier set, stop.
+\item We refine the line twice: fit the line by PCA on the current inliers (mean as point, first principal direction as \(\vv\)), then recompute which unassigned points are within 2.5 mm of this new line. The two-point fit can be skewed by one bad point; PCA on all inliers gives a more stable axis, and doing it twice lets the inlier set settle (points that were barely inside the tube may drop out, and the line may shift slightly).
+\item We record this shaft (the inlier indices, the line point and direction) and mark those candidates as assigned.
+\end{enumerate}
+The random number generator seed is fixed (e.g.\ 42) so runs are reproducible.
+
+\subsection{Shaft extension}
+After we have found all shafts, some strong contacts may still be unassigned---for example because they lay just outside the inlier tube for every trial, or because they were outvoted by a denser cluster. We assign any still-unassigned point to a shaft if: (i) its perpendicular distance to that shaft’s line is at most 2.5 mm, and (ii) its projection onto the line falls within 5 mm of the shaft’s existing span (before or after). Condition (ii) avoids extending the shaft arbitrarily far beyond the detected contacts. If more than one shaft qualifies, we assign to the one with the smallest perpendicular distance. This step recovers contacts that did not contribute enough to a collinear set during the main RANSAC loop.
+
+\section{Phase 3: Spacing model and gap filling}
+\label{sec:phase3}
+
+Contacts on a shaft are roughly evenly spaced (e.g.\ 3.5 mm or 5 mm depending on the manufacturer). We estimate that spacing from the gaps between consecutive detected contacts, and we add new contacts only where a gap is clearly 2 or more spacings---i.e.\ one or more contacts were missed. We deliberately do not place a full grid along the shaft (e.g.\ a contact every \(\lambda\) mm from end to end), because that would create many false positives where no contact was actually detected.
+
+\subsection{Per-shaft ordering and spacing estimate}
+For each shaft we take the candidates assigned to it and project their positions onto the shaft axis: \(t_i = (\vp_i - \vm)^\top \vv\) for each point \(\vp_i\). So \(t_i\) is the signed distance along the line; we sort the contacts by \(t\) and look at the gaps \(\Delta_j = t_{j+1} - t_j\) between consecutive contacts (ignoring gaps below 0.5 mm as numerical noise).
+
+The true spacing \(\lambda\) is unknown. We build a list of candidate spacings: every observed gap, and each gap divided by 2, 3, and 4 (in case the observed gap is 2, 3, or 4 times the true spacing), keeping only values between 1.5 and 12 mm (typical sEEG range). For each candidate \(\lambda\) we ask: how well do the observed gaps look like whole multiples of \(\lambda\)? If \(\lambda\) is correct, then each \(\Delta_j\) should be close to \(k\lambda\) for some integer \(k\). So we count how many gaps have \(\Delta_j/\lambda\) within 0.25 of an integer (i.e.\ the fractional part is either near 0 or near 1) and subtract a penalty for gaps that are far from any integer multiple. We choose the \(\lambda\) with the highest score. If no candidate falls in the allowed range we use the median gap; if the chosen \(\lambda\) is below 1 mm we set it to 3.5 mm as a safe default.
+
+\subsection{Gap-based fill}
+We step through consecutive pairs of contacts along the shaft. For a gap \(\Delta = t_{j+1} - t_j\), if the true spacing is \(\lambda\), then the number of contacts that ``fit'' in that gap is \(\Delta/\lambda\). If that ratio is, say, 2.3, we expect 2 contacts in the gap (plus the two we already have at the ends), so there is 1 missing contact between them. In general, the number of missing contacts is the integer part of \(\Delta/\lambda\) minus one (we already have the two endpoints), which we implement as \(n_{\mathrm{miss}} = \mathrm{round}(\Delta / \lambda) - 1\). We only fill if \(n_{\mathrm{miss}} \geq 1\) and the ratio \(\Delta/\lambda \geq 1.35\)---so we require a clear indication of at least one missing contact, not a tiny rounding gap. We cap at 3 filled contacts per gap and at \(n_s + 8\) total contacts on the shaft (where \(n_s\) is the number originally detected on that shaft) to avoid runaway insertion.
+
+For each of the \(n_{\mathrm{miss}}\) positions we place a point along the line at parameter
+\[
+\tau = t_j + \frac{\Delta \cdot k}{n_{\mathrm{miss}} + 1}, \quad k = 1,\ldots,n_{\mathrm{miss}},
+\]
+i.e.\ we space them evenly between \(t_j\) and \(t_{j+1}\); the 3D point is \(\vm + \tau \vv\). We convert to voxel coordinates and sample a \(3\times3\times3\) neighbourhood in the CT. We accept this interpolated contact only if the local mean intensity is above \(p_{90}\) and the local mean blob is above 0.03---so we do not insert contacts in air, soft tissue, or other low-intensity regions.
+
+\subsection{Singletons}
+Candidates that were never assigned to any shaft are added as singletons if their confidence is above 0.6 or their intensity is at least \(p_{99.9}\). They are given shaft ID 0.
+
+\section{Post-processing: brain and linearity filters}
+\label{sec:post}
+
+\subsection{Brain (surface) filter}
+When a brain surface mesh is available we test each contact (in mm) for being inside the mesh (point-in-triangulation). Contacts outside the mesh are likely on the skull, scalp, or other extracranial structures rather than electrode contacts in the brain. We remove those contacts. We then remove any shaft that has fewer than 2 contacts left (a single remaining contact on a shaft is not enough to define a meaningful electrode), so we drop bone and other extracranial detections.
+
+\subsection{Linearity filter}
+Real electrodes are straight; bone or other dense structures (e.g.\ following the skull) can form curved chains that RANSAC still fits with a line, but the points will sit off the line in a systematic way. For each shaft that has at least 3 contacts and a span of at least 8 mm we fit the line by PCA and compute the maximum perpendicular distance from any contact to the line. We define a simple curvature measure as that maximum distance divided by the span along the line. If the contacts were on a perfect line this ratio would be 0; if they follow a curve it grows. If the ratio exceeds 0.25 we treat the shaft as curved (likely not an electrode) and remove all its contacts.
+
+\section{Phase 4: Deduplication and output}
+\label{sec:phase4}
+
+We sort all contacts by confidence (highest first) so that when we cap or remove duplicates we keep the more reliable detections. We then enforce a minimum distance of 2 mm between contacts: for any pair closer than 2 mm we remove the one with lower confidence. The 2 mm threshold is below typical contact spacing (3--5 mm) so we do not merge distinct contacts, but it removes duplicates that survived from different phases (e.g.\ a gap-filled contact very close to a detected one). If the total number of contacts is above MaxElecs we keep only the first MaxElecs, which are already the highest-confidence. We convert the final positions from mm to voxel coordinates using the MR (or CT) affine and round to integers. We return this list as WC (1-based voxel coordinates) and the nominal threshold \(T\) for compatibility with code that expects a single threshold value.
+
+\end{document}

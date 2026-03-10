@@ -26,11 +26,14 @@ function ea_trajectory_seeg(elstruct, options)
         % Color for trajectory
         cmap = summer(256);
         ccol = cmap(randi(size(cmap,1)),:);
-        for k = 1:size(coords,1)
-            x = coords(k,1); y = coords(k,2); z = coords(k,3);
-                surf(r_sphere*Xs + x, r_sphere*Ys + y, r_sphere*Zs + z, ...
-                     'FaceColor', ccol, 'EdgeColor', 'none');
-        end
+        ccol = [0, 0, 0];
+%         for k = 1:size(coords,1)
+%             x = coords(k,1); y = coords(k,2); z = coords(k,3);
+%             if x < 0
+%                 surf(r_sphere*Xs + x, r_sphere*Ys + y, r_sphere*Zs + z, ...
+%                      'FaceColor', ccol, 'EdgeColor', 'none');
+%             end
+%         end
 
         % Curved trajectory
         if isfield(elstruct, 'curve_mm') && numel(elstruct.curve_mm) >= i ...
@@ -55,8 +58,8 @@ function ea_trajectory_seeg(elstruct, options)
         end
 
         % Show the trajectory. Can comment out if only want to see spheres
-        plot3(Ct(:,1), Ct(:,2), Ct(:,3), '-', 'LineWidth', 6, 'Color', ccol);
-
+%         plot3(Ct(:,1), Ct(:,2), Ct(:,3), '-', 'LineWidth', 6, 'Color', ccol);
+        ea_render_curved_lead(Ct, coords, options.elspec);
         % Stash for ea_showelectrode
         plan_coords{i} = coords;
         plan_traj{i}   = Ct;

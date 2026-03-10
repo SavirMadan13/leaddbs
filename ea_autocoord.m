@@ -214,7 +214,7 @@ if ~strcmp(options.patientname,'No Patient Selected') && ~isempty(options.patien
     end
 
     if options.resize.do
-        acpcDone = ea_runacpc(options);
+        resizeDone = ea_runresize(options);
     end
 
     if options.coregmr.do

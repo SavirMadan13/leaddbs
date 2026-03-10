@@ -78,7 +78,7 @@ prefs.lc.func.regress_global=1;
 prefs.lc.func.regress_wmcsf=1;
 prefs.lc.func.bphighcutoff=0.08;
 prefs.lc.func.bplowcutoff=0.009;
-prefs.lc.datadir=[ea_getearoot,'connectomes',filesep];
+prefs.lc.datadir=['/Volumes/PdBwh/ImpCompDataSavir','connectomes',filesep];
 
 %% connectome mapper settings:
 prefs.lcm.vatseed='binary'; % set to 'efieldgauss' to use weighted seed of normalized E-field (or 'efield' to use weighted seed of unmodified e-field - not recommended).

@@ -5,11 +5,14 @@ function vis_cortex_seeg(varargin)
     
     S = load('CortexHiRes.mat','Vertices_rh','Faces_rh','Vertices_lh','Faces_lh');
     
-    Vfull = [S.Vertices_lh; S.Vertices_rh];
-    Ffull = [fliplr(S.Faces_lh); fliplr(S.Faces_rh) + size(S.Vertices_lh,1)];
-    % If you only want one hemisphere
-    % Vfull = [S.Vertices_lh];
-    % Ffull = [fliplr(S.Faces_lh)];
+    % Plotting both hemispheres
+%     Vfull = [S.Vertices_lh; S.Vertices_rh];
+%     Ffull = [fliplr(S.Faces_lh); fliplr(S.Faces_rh) + size(S.Vertices_lh,1)];
+
+    % If you only want one hemisphere. Example here: left hemisphere.
+    % For right hemisphere, replace 'lh' with 'rh'
+    Vfull = [S.Vertices_lh];
+    Ffull = [fliplr(S.Faces_lh)];
     
     keepFraction = 1;                  % resolution, 0-1
     
@@ -41,14 +44,15 @@ function vis_cortex_seeg(varargin)
     b_rim   = 1.0;   % glow of the rim, 0-1
     w = min(1, a_curve*wc + b_rim*rim);
     
-    % Dark base + glow to white
-    base = [0 0 0];
+    % Color of the cortex
+%     base = [0 0 0]; % use this color when background is black
+    base = [1 1 1]; % use this color when background is white
     C = base + w .* (1 - base);
     
     % Render
     p = patch('Faces',F,'Vertices',V, ...
               'FaceVertexCData',C, 'FaceColor','interp', ...
-              'EdgeColor','none', 'FaceAlpha',0.4, ...   % slightly more transparent
+              'EdgeColor','none', 'FaceAlpha',0.2, ...   % slightly more transparent
               'BackFaceLighting','lit', 'FaceLighting','gouraud', ...
               'AmbientStrength',0.10, 'DiffuseStrength',0.95, ...
               'SpecularStrength',0.03, 'SpecularExponent',8, ...

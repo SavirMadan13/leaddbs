@@ -206,7 +206,7 @@ tic
 
 
 % Check for Parallel Computing Toolbox
-hasParallelToolbox = license('test', 'Distrib_Computing_Toolbox');
+hasParallelToolbox = false;%license('test', 'Distrib_Computing_Toolbox');
 if dataset.migrateConnectome % migration does not work in parfor mode since cannot call save().
     hasParallelToolbox=0;
 end
